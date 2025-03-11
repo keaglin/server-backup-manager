@@ -9,6 +9,7 @@ import (
 
 	"github.com/user/server-backup-manager/internal/backup"
 	"github.com/user/server-backup-manager/internal/config"
+	"github.com/user/server-backup-manager/internal/monitoring"
 	"github.com/user/server-backup-manager/internal/storage"
 	"github.com/user/server-backup-manager/pkg/utils"
 )
@@ -38,6 +39,19 @@ func main() {
 	// Initialize backup manager
 	backupManager := backup.NewManager(cfg, s3Client)
 
+	// Initialize monitoring service if enabled
+	var monitorService *monitoring.Service
+	if cfg.EnableMonitoring {
+		monitorConfig := monitoring.Config{
+			MonitorPaths:         cfg.MonitorPaths,
+			DiskThresholdPercent: cfg.DiskThresholdPercent,
+			CheckInterval:        cfg.MonitorInterval,
+			WebhookURLs:          cfg.WebhookURLs,
+			WebhookTimeout:       cfg.WebhookTimeout,
+		}
+		monitorService = monitoring.NewService(monitorConfig)
+	}
+
 	// Handle one-time backup mode
 	if cfg.RunOnce {
 		if err := backupManager.RunBackup(); err != nil {
@@ -54,6 +68,16 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Start monitoring service if enabled
+	if monitorService != nil {
+		if err := monitorService.Start(); err != nil {
+			logger.Error("Failed to start monitoring service: %v", err)
+			// Continue running even if monitoring fails
+		} else {
+			logger.Info("Disk space monitoring started with threshold %.2f%%", cfg.DiskThresholdPercent)
+		}
+	}
+
 	// Handle graceful shutdown
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -62,7 +86,12 @@ func main() {
 	sig := <-sigCh
 	logger.Info("Received signal %v, shutting down...", sig)
 
-	// Stop backup manager
+	// Stop services
+	if monitorService != nil {
+		monitorService.Stop()
+		logger.Info("Monitoring service stopped")
+	}
+
 	backupManager.Stop()
 	logger.Info("Backup manager stopped")
 }

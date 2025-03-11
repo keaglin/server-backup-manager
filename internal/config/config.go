@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 )
 
 // Config holds application configuration
@@ -23,6 +24,13 @@ type Config struct {
 	UploadSchedule string
 	// Run once and exit (for manual trigger)
 	RunOnce bool
+	// Monitoring configuration
+	EnableMonitoring     bool
+	MonitorPaths         []string
+	DiskThresholdPercent float64
+	MonitorInterval      time.Duration
+	WebhookURLs          []string
+	WebhookTimeout       time.Duration
 }
 
 // LoadConfig loads configuration from environment variables and command-line flags
@@ -40,8 +48,49 @@ func LoadConfig() *Config {
 	flag.StringVar(&config.UploadSchedule, "schedule", getEnv("UPLOAD_SCHEDULE", "0 0 */14 * *"), "Cron schedule for backups")
 	flag.BoolVar(&config.RunOnce, "run-once", getEnvBool("RUN_ONCE", false), "Run backup once and exit")
 
+	// Monitoring flags
+	flag.BoolVar(&config.EnableMonitoring, "enable-monitoring", getEnvBool("ENABLE_MONITORING", true), "Enable disk space monitoring")
+	monitorPathsStr := flag.String("monitor-paths", getEnv("MONITOR_PATHS", ""), "Comma-separated list of paths to monitor for disk space")
+	flag.Float64Var(&config.DiskThresholdPercent, "disk-threshold", getEnvFloat("DISK_THRESHOLD", 75.0), "Disk usage threshold percentage for alerts")
+	monitorIntervalStr := flag.String("monitor-interval", getEnv("MONITOR_INTERVAL", "30m"), "Interval for disk space checks")
+	webhookURLsStr := flag.String("webhook-urls", getEnv("WEBHOOK_URLS", ""), "Comma-separated list of webhook URLs for alerts")
+	webhookTimeoutStr := flag.String("webhook-timeout", getEnv("WEBHOOK_TIMEOUT", "10s"), "Timeout for webhook requests")
+
 	// Parse command-line flags
 	flag.Parse()
+
+	// Process monitoring paths
+	if *monitorPathsStr != "" {
+		config.MonitorPaths = strings.Split(*monitorPathsStr, ",")
+		// Trim spaces
+		for i, path := range config.MonitorPaths {
+			config.MonitorPaths[i] = strings.TrimSpace(path)
+		}
+	} else {
+		// Default to monitoring the backup directory
+		config.MonitorPaths = []string{config.BackupDir}
+	}
+
+	// Process webhook URLs
+	if *webhookURLsStr != "" {
+		config.WebhookURLs = strings.Split(*webhookURLsStr, ",")
+		// Trim spaces
+		for i, url := range config.WebhookURLs {
+			config.WebhookURLs[i] = strings.TrimSpace(url)
+		}
+	}
+
+	// Parse durations
+	var err error
+	config.MonitorInterval, err = time.ParseDuration(*monitorIntervalStr)
+	if err != nil {
+		config.MonitorInterval = 30 * time.Minute // Default to 30 minutes
+	}
+
+	config.WebhookTimeout, err = time.ParseDuration(*webhookTimeoutStr)
+	if err != nil {
+		config.WebhookTimeout = 10 * time.Second // Default to 10 seconds
+	}
 
 	return config
 }
@@ -64,6 +113,25 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("S3 credentials are required")
 	}
 
+	// Validate monitoring configuration if enabled
+	if c.EnableMonitoring {
+		if len(c.MonitorPaths) == 0 {
+			return fmt.Errorf("at least one monitoring path is required when monitoring is enabled")
+		}
+
+		if c.DiskThresholdPercent <= 0 || c.DiskThresholdPercent > 100 {
+			return fmt.Errorf("disk threshold percentage must be between 0 and 100")
+		}
+
+		if c.MonitorInterval < time.Minute {
+			return fmt.Errorf("monitor interval must be at least 1 minute")
+		}
+
+		if len(c.WebhookURLs) == 0 {
+			return fmt.Errorf("at least one webhook URL is required when monitoring is enabled")
+		}
+	}
+
 	return nil
 }
 
@@ -79,6 +147,17 @@ func getEnvInt(key string, fallback int) int {
 	if value, exists := os.LookupEnv(key); exists {
 		var result int
 		_, err := fmt.Sscanf(value, "%d", &result)
+		if err == nil {
+			return result
+		}
+	}
+	return fallback
+}
+
+func getEnvFloat(key string, fallback float64) float64 {
+	if value, exists := os.LookupEnv(key); exists {
+		var result float64
+		_, err := fmt.Sscanf(value, "%f", &result)
 		if err == nil {
 			return result
 		}
