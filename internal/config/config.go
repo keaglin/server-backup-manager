@@ -24,6 +24,8 @@ type Config struct {
 	UploadSchedule string
 	// Run once and exit (for manual trigger)
 	RunOnce bool
+	// Initialize mode - scan existing backups and apply retention policies
+	InitializeMode bool
 	// Monitoring configuration
 	EnableMonitoring     bool
 	MonitorPaths         []string
@@ -47,6 +49,7 @@ func LoadConfig() *Config {
 	flag.IntVar(&config.RetentionDays, "retention-days", getEnvInt("RETENTION_DAYS", 90), "Number of days to retain backups")
 	flag.StringVar(&config.UploadSchedule, "schedule", getEnv("UPLOAD_SCHEDULE", "0 0 */14 * *"), "Cron schedule for backups")
 	flag.BoolVar(&config.RunOnce, "run-once", getEnvBool("RUN_ONCE", false), "Run backup once and exit")
+	flag.BoolVar(&config.InitializeMode, "initialize", getEnvBool("INITIALIZE", false), "Initialize mode: scan existing backups and apply retention policies")
 
 	// Monitoring flags
 	flag.BoolVar(&config.EnableMonitoring, "enable-monitoring", getEnvBool("ENABLE_MONITORING", true), "Enable disk space monitoring")

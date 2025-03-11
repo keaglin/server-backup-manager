@@ -39,6 +39,27 @@ func main() {
 	// Initialize backup manager
 	backupManager := backup.NewManager(cfg, s3Client)
 
+	// Handle initialization mode
+	if cfg.InitializeMode {
+		logger.Info("Running in initialization mode")
+		if err := backupManager.InitializeBackups(); err != nil {
+			logger.Error("Initialization failed: %v", err)
+			os.Exit(1)
+		}
+		logger.Info("Initialization completed successfully")
+		return
+	}
+
+	// Handle one-time backup mode
+	if cfg.RunOnce {
+		if err := backupManager.RunBackup(); err != nil {
+			logger.Error("Backup failed: %v", err)
+			os.Exit(1)
+		}
+		logger.Info("One-time backup completed successfully")
+		return
+	}
+
 	// Initialize monitoring service if enabled
 	var monitorService *monitoring.Service
 	if cfg.EnableMonitoring {
@@ -50,16 +71,6 @@ func main() {
 			WebhookTimeout:       cfg.WebhookTimeout,
 		}
 		monitorService = monitoring.NewService(monitorConfig)
-	}
-
-	// Handle one-time backup mode
-	if cfg.RunOnce {
-		if err := backupManager.RunBackup(); err != nil {
-			logger.Error("Backup failed: %v", err)
-			os.Exit(1)
-		}
-		logger.Info("One-time backup completed successfully")
-		return
 	}
 
 	// Start backup manager

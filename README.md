@@ -10,6 +10,7 @@ A Go application for managing server backups to S3-compatible storage.
 - File logging
 - Command-line flags and environment variables for configuration
 - One-time backup mode
+- Initialization mode for existing backups
 - Disk space monitoring with webhook alerts
 
 ## Getting Started
@@ -38,6 +39,9 @@ go build
 # Run once and exit
 ./server-backup-manager --run-once
 
+# Initialize with existing backups
+./server-backup-manager --initialize --backup-dir=/path/to/existing/backups
+
 # Show help
 ./server-backup-manager --help
 ```
@@ -56,6 +60,7 @@ The application can be configured using environment variables:
 - `RETENTION_DAYS`: Number of days to retain backups
 - `UPLOAD_SCHEDULE`: Cron schedule for backups
 - `RUN_ONCE`: Run backup once and exit (true/false)
+- `INITIALIZE`: Initialize mode for existing backups (true/false)
 
 #### Monitoring Configuration
 - `ENABLE_MONITORING`: Enable disk space monitoring (true/false)
@@ -64,6 +69,22 @@ The application can be configured using environment variables:
 - `MONITOR_INTERVAL`: Interval for disk space checks (e.g., "30m" for 30 minutes)
 - `WEBHOOK_URLS`: Comma-separated list of webhook URLs for alerts
 - `WEBHOOK_TIMEOUT`: Timeout for webhook requests (e.g., "10s" for 10 seconds)
+
+## Initialization Mode
+
+The initialization mode is designed for when you're setting up the backup manager for the first time and already have existing backup files. When run with the `--initialize` flag, the application will:
+
+1. Scan the specified backup directory for existing files
+2. Delete local files older than the retention period (default: 90 days)
+3. Upload all remaining files to the S3 bucket
+4. Apply the same retention policy to the S3 bucket
+
+This is useful for migrating existing backups to the new system while maintaining your retention policies.
+
+Example:
+```bash
+./server-backup-manager --initialize --backup-dir=/path/to/existing/backups --retention-days=60
+```
 
 ## Disk Space Monitoring
 
