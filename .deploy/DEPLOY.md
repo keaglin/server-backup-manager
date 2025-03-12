@@ -168,4 +168,46 @@ To update the server-backup-manager:
 3. Restart the service:
    ```bash
    sudo systemctl start server-backup-manager
+   ```
+
+## Special Operation Modes
+
+### Initialization Mode
+
+If you have existing backups that you want to upload to R2, you can use the initialization mode:
+
+1. Edit the environment file to enable initialization mode:
+   ```bash
+   sudo nano /etc/default/server-backup-manager
+   ```
+
+2. Add or modify the following line:
+   ```
+   INITIALIZE=true
+   ```
+
+3. Run the application manually:
+   ```bash
+   sudo /opt/server-backup-manager/server-backup-manager
+   ```
+
+4. After initialization is complete, set `INITIALIZE=false` or remove the line to prevent re-initialization on the next run.
+
+### One-Time Backup Mode
+
+If you want to run a single backup and then exit (instead of running as a service):
+
+1. Edit the environment file:
+   ```bash
+   sudo nano /etc/default/server-backup-manager
+   ```
+
+2. Add or modify the following line:
+   ```
+   RUN_ONCE=true
+   ```
+
+3. Run the application manually:
+   ```bash
+   sudo /opt/server-backup-manager/server-backup-manager
    ``` 

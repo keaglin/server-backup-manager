@@ -13,6 +13,7 @@ PACKAGE_DIR="$BUILD_DIR/$PACKAGE_NAME"
 BINARY_NAME="server-backup-manager"
 ARCH="amd64"
 OS="linux"
+DEPLOY_DIR=".deploy"
 
 echo "Packaging server-backup-manager version $VERSION"
 
@@ -25,8 +26,11 @@ GOOS=$OS GOARCH=$ARCH go build -o "$PACKAGE_DIR/$BINARY_NAME" .
 
 # Copy deployment files
 echo "Copying deployment files..."
-cp setup-r2.sh "$PACKAGE_DIR/"
+cp "$DEPLOY_DIR/setup.sh" "$PACKAGE_DIR/setup-r2.sh"
 chmod +x "$PACKAGE_DIR/setup-r2.sh"
+cp "$DEPLOY_DIR/server-backup-manager.service" "$PACKAGE_DIR/"
+cp "$DEPLOY_DIR/deploy.sh" "$PACKAGE_DIR/"
+chmod +x "$PACKAGE_DIR/deploy.sh"
 
 # Create sample environment file
 echo "Creating sample environment file..."
@@ -44,6 +48,10 @@ USE_SSL=true
 RETENTION_DAYS=14
 UPLOAD_SCHEDULE="0 2 * * *"
 
+# Special Operation Modes
+# INITIALIZE=false
+# RUN_ONCE=false
+
 # Monitoring Configuration (optional)
 ENABLE_MONITORING=false
 # DISK_THRESHOLD=85
@@ -53,8 +61,8 @@ EOF
 # Copy documentation
 echo "Copying documentation..."
 cp README.md "$PACKAGE_DIR/"
-cp DEPLOY.md "$PACKAGE_DIR/"
-cp TROUBLESHOOTING.md "$PACKAGE_DIR/" 2>/dev/null || echo "No troubleshooting guide found, skipping..."
+cp "$DEPLOY_DIR/DEPLOY.md" "$PACKAGE_DIR/"
+cp "$DEPLOY_DIR/TROUBLESHOOTING.md" "$PACKAGE_DIR/" 2>/dev/null || echo "No troubleshooting guide found, skipping..."
 
 # Create tarball
 echo "Creating tarball..."
