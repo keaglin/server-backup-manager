@@ -5,18 +5,26 @@ if [ -f .env ]; then
     source .env
 fi
 
+# Log function to add timestamps
+log() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1"
+}
+
 # Default settings
 DRY_RUN=false
+MAX_BACKUPS=5  # Default number of backups to keep
 
 # Parse command line arguments
 while [[ "$#" -gt 0 ]]; do
     case $1 in
         -d|--dry-run) DRY_RUN=true ;;
+        -m|--max-backups=*) MAX_BACKUPS="${1#*=}" ;;
         -h|--help)
             echo "Usage: $0 [options]"
             echo "Options:"
-            echo "  -d, --dry-run    Show what would be backed up without actually copying"
-            echo "  -h, --help       Show this help message"
+            echo "  -d, --dry-run                Show what would be backed up without actually copying"
+            echo "  -m, --max-backups=N          Keep only N most recent backups (default: 5)"
+            echo "  -h, --help                   Show this help message"
             exit 0
             ;;
         *) echo "Unknown parameter: $1"; exit 1 ;;
@@ -24,9 +32,15 @@ while [[ "$#" -gt 0 ]]; do
     shift
 done
 
+# Check if MAX_BACKUPS is a positive integer
+if ! [[ "$MAX_BACKUPS" =~ ^[0-9]+$ ]] || [ "$MAX_BACKUPS" -lt 1 ]; then
+    log "Error: MAX_BACKUPS must be a positive integer"
+    exit 1
+fi
+
 # Check if running as root
 if [ "$EUID" -ne 0 ]; then
-    echo "Error: Please run as root or with sudo"
+    log "Error: Please run as root or with sudo"
     exit 1
 fi
 
@@ -37,7 +51,7 @@ LATEST_LINK="/home/ghost/backups/latest"
 
 # Check if backup directory already exists
 if [ -d "${BACKUP_DIR}" ]; then
-    echo "Error: Backup directory already exists: ${BACKUP_DIR}"
+    log "Error: Backup directory already exists: ${BACKUP_DIR}"
     exit 1
 fi
 
@@ -46,7 +60,7 @@ REQUIRED_SPACE=$(du -sb /var/lib/docker/volumes/{app_db_data,ghost_data,minio_da
 AVAILABLE_SPACE=$(df -B1 /home/ghost/backups | awk 'NR==2 {print $4}')
 
 if [ $AVAILABLE_SPACE -lt $REQUIRED_SPACE ]; then
-    echo "Error: Insufficient disk space"
+    log "Error: Insufficient disk space"
     echo "Required: $(numfmt --to=iec-i $REQUIRED_SPACE)"
     echo "Available: $(numfmt --to=iec-i $AVAILABLE_SPACE)"
     exit 1
@@ -67,12 +81,50 @@ declare -A DATABASES=(
 )
 
 # Backup databases
-echo "Creating database dumps..."
+log "Creating database dumps..."
 if [ "$DRY_RUN" = true ]; then
-    echo "[DRY RUN] Would dump databases"
+    log "[DRY RUN] Would dump databases"
 else
     for container in "${!DATABASES[@]}"; do
-        # ... existing code ...
+        DB_INFO="${DATABASES[$container]}"
+        DB_TYPE="${DB_INFO%%:*}"
+        DB_NAME=$(echo "$DB_INFO" | cut -d: -f2)
+        DB_USER=$(echo "$DB_INFO" | cut -d: -f3)
+        DB_PASS=$(echo "$DB_INFO" | cut -d: -f4)
+        
+        DUMP_FILE="${BACKUP_DIR}/databases/${container}-${DB_NAME}.sql"
+        
+        log "Dumping ${DB_TYPE} database ${DB_NAME} from ${container}..."
+        
+        case "$DB_TYPE" in
+            "mysql")
+                docker exec "$container" mysqldump \
+                    -u "${DB_USER}" \
+                    -p"${DB_PASS}" \
+                    --single-transaction \
+                    --quick \
+                    --lock-tables=false \
+                    "$DB_NAME" > "$DUMP_FILE"
+                ;;
+            
+            "postgres")
+                docker exec "$container" pg_dump \
+                    -U "${DB_USER}" \
+                    -d "${DB_NAME}" \
+                    -c > "$DUMP_FILE"
+                ;;
+            
+            *)
+                echo "Unknown database type: ${DB_TYPE}"
+                exit 1
+                ;;
+        esac
+        
+        # Check if dump was successful
+        if [ ! -s "$DUMP_FILE" ]; then
+            log "Error: Failed to create database dump for ${DB_NAME}"
+            exit 1
+        fi
     done
 fi
 
@@ -89,13 +141,13 @@ VOLUMES=(
 for volume in "${VOLUMES[@]}"; do
     # Check if volume exists
     if [ ! -d "/var/lib/docker/volumes/${volume}" ]; then
-        echo "Error: Volume not found: ${volume}"
+        log "Error: Volume not found: ${volume}"
         exit 1
     fi
 
-    echo "Backing up ${volume}..."
+    log "Backing up ${volume}..."
     if [ "$DRY_RUN" = true ]; then
-        echo "[DRY RUN] Would rsync /var/lib/docker/volumes/${volume} to ${BACKUP_DIR}/volumes/"
+        log "[DRY RUN] Would rsync /var/lib/docker/volumes/${volume} to ${BACKUP_DIR}/volumes/"
         continue
     fi
 
@@ -105,19 +157,58 @@ for volume in "${VOLUMES[@]}"; do
     # Use rsync with hard links to previous backup if it exists
     if [ -L "${LATEST_LINK}" ] && [ -d "${LATEST_LINK}/volumes/${volume}" ]; then
         rsync -a --link-dest="${LATEST_LINK}/volumes/${volume}" "/var/lib/docker/volumes/${volume}" "${BACKUP_DIR}/volumes/"
+        
+        # Check if backup was successful
+        if [ $? -ne 0 ]; then
+            log "Error: Failed to backup volume ${volume} using rsync"
+            exit 1
+        fi
     else
         # If no previous backup exists, do a full copy
         cp -r "/var/lib/docker/volumes/${volume}" "${BACKUP_DIR}/volumes/"
+        
+        # Check if backup was successful
+        if [ $? -ne 0 ]; then
+            log "Error: Failed to backup volume ${volume}"
+            exit 1
+        fi
     fi
 done
 
 if [ "$DRY_RUN" = true ]; then
-    echo "Dry run completed. No files were copied."
+    log "Dry run completed. No files were copied."
 else
-    echo "Backup completed successfully in ${BACKUP_DIR}"
+    log "Backup completed successfully in ${BACKUP_DIR}"
     echo "Backup size: $(du -sh ${BACKUP_DIR} | cut -f1)"
     
     # Update the "latest" symlink to point to this backup
     rm -f "${LATEST_LINK}"
     ln -s "${BACKUP_DIR}" "${LATEST_LINK}"
+    
+    # Rotate old backups
+    log "Checking for old backups to remove..."
+    if [ "$MAX_BACKUPS" -gt 0 ]; then
+        # List all backups sorted by date (oldest first)
+        BACKUPS=$(find /home/ghost/backups -maxdepth 1 -type d -name "20*_*" | sort)
+        
+        # Count the number of backups
+        BACKUP_COUNT=$(echo "$BACKUPS" | wc -l)
+        
+        # Remove oldest backups if we have more than MAX_BACKUPS
+        if [ "$BACKUP_COUNT" -gt "$MAX_BACKUPS" ]; then
+            REMOVE_COUNT=$((BACKUP_COUNT - MAX_BACKUPS))
+            log "Removing $REMOVE_COUNT old backup(s)..."
+            
+            # Get the list of backups to remove
+            BACKUPS_TO_REMOVE=$(echo "$BACKUPS" | head -n "$REMOVE_COUNT")
+            
+            # Remove each backup
+            echo "$BACKUPS_TO_REMOVE" | while read -r backup; do
+                log "Removing old backup: $backup"
+                rm -rf "$backup"
+            done
+        else
+            log "No old backups to remove. Current count: $BACKUP_COUNT, max: $MAX_BACKUPS"
+        fi
+    fi
 fi

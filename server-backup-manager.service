@@ -1,0 +1,20 @@
+[Unit]
+Description=Server Backup Manager Service
+After=network.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/opt/server-backup-manager
+ExecStart=/opt/server-backup-manager/server-backup-manager
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+# Optional: Set environment variables if needed
+# Environment=KEY=value
+
+[Install]
+WantedBy=multi-user.target 
