@@ -9,25 +9,101 @@ import (
 	"strings"
 	"time"
 
-	"github.com/minio/minio-go/v7"
-	"github.com/minio/minio-go/v7/pkg/credentials"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/user/server-backup-manager/internal/config"
 )
 
 // S3Client handles operations with S3-compatible storage
 type S3Client struct {
-	client *minio.Client
+	client *s3.Client
 	config *config.Config
 }
 
 // NewS3Client initializes a new S3 client
 func NewS3Client(cfg *config.Config) (*S3Client, error) {
-	client, err := minio.New(cfg.BucketEndpoint, &minio.Options{
-		Creds:  credentials.NewStaticV4(cfg.AccessKeyID, cfg.SecretAccessKey, ""),
-		Secure: cfg.UseSSL,
+	// Validate required configuration
+	if cfg.BucketEndpoint == "" {
+		return nil, fmt.Errorf("bucket endpoint is required - please check your configuration")
+	}
+
+	if cfg.AccessKeyID == "" || cfg.SecretAccessKey == "" {
+		return nil, fmt.Errorf("R2 credentials (access key ID and secret access key) are required")
+	}
+
+	if cfg.BucketName == "" {
+		return nil, fmt.Errorf("bucket name is required")
+	}
+
+	// Log configuration (without exposing secrets)
+	log.Printf("Initializing S3 client with the following configuration:")
+	log.Printf("- Access Key ID: %s (length: %d)", maskString(cfg.AccessKeyID), len(cfg.AccessKeyID))
+	log.Printf("- Secret Access Key length: %d", len(cfg.SecretAccessKey))
+	log.Printf("- Bucket Endpoint: %s", cfg.BucketEndpoint)
+	log.Printf("- Bucket Name: %s", cfg.BucketName)
+
+	// Format the endpoint correctly for Cloudflare R2
+	// Expected format: https://accountid.r2.cloudflarestorage.com
+	endpoint := cfg.BucketEndpoint
+
+	// If the endpoint doesn't already have a protocol, add https://
+	if !strings.HasPrefix(endpoint, "https://") && !strings.HasPrefix(endpoint, "http://") {
+		endpoint = fmt.Sprintf("https://%s", endpoint)
+	}
+
+	// Log the endpoint being used for debugging
+	log.Printf("Using R2 endpoint: %s", endpoint)
+
+	// Following Cloudflare R2 example: https://developers.cloudflare.com/r2/examples/aws/aws-sdk-go/
+	// Create a custom resolver that forces the endpoint
+	customResolver := aws.EndpointResolverWithOptionsFunc(func(service, region string, options ...interface{}) (aws.Endpoint, error) {
+		return aws.Endpoint{
+			URL:               endpoint,
+			HostnameImmutable: true,
+			SigningRegion:     "auto",
+		}, nil
 	})
+
+	// Create AWS SDK configuration
+	awsCfg, err := awsconfig.LoadDefaultConfig(context.Background(),
+		// Use static credentials provider with the access key and secret
+		awsconfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(
+			cfg.AccessKeyID,
+			cfg.SecretAccessKey,
+			"",
+		)),
+		// R2 requires "auto" as the region
+		awsconfig.WithRegion("auto"),
+		// Use our custom endpoint resolver
+		awsconfig.WithEndpointResolverWithOptions(customResolver),
+		// Enable logging for debugging
+		awsconfig.WithClientLogMode(aws.LogRetries|aws.LogRequest|aws.LogResponse),
+		// IMPORTANT: Disable checksum calculation and validation for R2 compatibility
+		// See: https://developers.cloudflare.com/r2/examples/aws/aws-sdk-go/
+		awsconfig.WithRequestChecksumCalculation(0),
+		awsconfig.WithResponseChecksumValidation(0),
+	)
 	if err != nil {
-		return nil, fmt.Errorf("failed to initialize S3 client: %w", err)
+		return nil, fmt.Errorf("failed to load AWS SDK config: %w", err)
+	}
+
+	// Create S3 client with Cloudflare R2 endpoint
+	client := s3.NewFromConfig(awsCfg, func(o *s3.Options) {
+		// Force path-style addressing (bucket name in the path rather than subdomain)
+		// This is important for compatibility with R2
+		o.UsePathStyle = true
+	})
+
+	// Test the credentials with a simple operation
+	log.Printf("Testing S3 client connection...")
+	_, err = client.ListBuckets(context.Background(), &s3.ListBucketsInput{})
+	if err != nil {
+		log.Printf("WARNING: Failed to list buckets during initialization: %v", err)
+		// Continue anyway, as the bucket might not exist yet
+	} else {
+		log.Printf("Successfully connected to S3 endpoint")
 	}
 
 	return &S3Client{
@@ -36,19 +112,38 @@ func NewS3Client(cfg *config.Config) (*S3Client, error) {
 	}, nil
 }
 
+// maskString masks a string for logging, showing only the first and last characters
+func maskString(s string) string {
+	if len(s) <= 6 {
+		return "***" // Don't show anything for short strings
+	}
+	return s[:3] + "..." + s[len(s)-3:]
+}
+
 // EnsureBucketExists creates the bucket if it doesn't exist
 func (s *S3Client) EnsureBucketExists(ctx context.Context) error {
-	exists, err := s.client.BucketExists(ctx, s.config.BucketName)
-	if err != nil {
-		return fmt.Errorf("failed to check if bucket exists: %w", err)
-	}
+	log.Printf("Checking if bucket '%s' exists...", s.config.BucketName)
 
-	if !exists {
-		err = s.client.MakeBucket(ctx, s.config.BucketName, minio.MakeBucketOptions{})
+	// Check if bucket exists
+	_, err := s.client.HeadBucket(ctx, &s3.HeadBucketInput{
+		Bucket: aws.String(s.config.BucketName),
+	})
+
+	if err != nil {
+		log.Printf("Bucket '%s' does not exist or cannot be accessed: %v", s.config.BucketName, err)
+		log.Printf("Attempting to create bucket '%s'...", s.config.BucketName)
+
+		// If bucket doesn't exist, create it
+		_, err = s.client.CreateBucket(ctx, &s3.CreateBucketInput{
+			Bucket: aws.String(s.config.BucketName),
+		})
 		if err != nil {
+			log.Printf("Failed to create bucket: %v", err)
 			return fmt.Errorf("failed to create bucket: %w", err)
 		}
 		log.Printf("Bucket '%s' created successfully", s.config.BucketName)
+	} else {
+		log.Printf("Bucket '%s' already exists", s.config.BucketName)
 	}
 
 	return nil
@@ -62,18 +157,16 @@ func (s *S3Client) UploadFile(ctx context.Context, localPath, objectName string)
 	}
 	defer file.Close()
 
-	stat, err := file.Stat()
-	if err != nil {
-		return fmt.Errorf("failed to get file stats: %w", err)
-	}
-
-	_, err = s.client.PutObject(ctx, s.config.BucketName, objectName, file, stat.Size(),
-		minio.PutObjectOptions{
-			ContentType: "application/octet-stream",
-			UserMetadata: map[string]string{
-				"upload-date": time.Now().Format(time.RFC3339),
-			},
-		})
+	// Upload the file
+	_, err = s.client.PutObject(ctx, &s3.PutObjectInput{
+		Bucket: aws.String(s.config.BucketName),
+		Key:    aws.String(objectName),
+		Body:   file,
+		Metadata: map[string]string{
+			"upload-date": time.Now().Format(time.RFC3339),
+		},
+		ContentType: aws.String("application/octet-stream"),
+	})
 
 	if err != nil {
 		return fmt.Errorf("failed to upload file %s: %w", localPath, err)
@@ -88,6 +181,11 @@ func (s *S3Client) UploadDirectory(ctx context.Context, dirPath string) error {
 	if err := s.EnsureBucketExists(ctx); err != nil {
 		return err
 	}
+
+	// Calculate cutoff time for old logs (14 days)
+	oldLogsCutoff := time.Now().AddDate(0, 0, -14)
+	log.Printf("Uploading files from %s to R2 bucket %s", dirPath, s.config.BucketName)
+	log.Printf("Files older than %s will be uploaded as 'archive/' objects", oldLogsCutoff.Format("2006-01-02"))
 
 	return filepath.Walk(dirPath, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
@@ -108,36 +206,20 @@ func (s *S3Client) UploadDirectory(ctx context.Context, dirPath string) error {
 		// Replace backslashes with forward slashes for S3 object paths
 		objectName := strings.ReplaceAll(relPath, "\\", "/")
 
+		// If the file is older than 14 days, put it in an "archive" folder
+		if info.ModTime().Before(oldLogsCutoff) {
+			objectName = "archive/" + objectName
+			log.Printf("File %s is older than 14 days, uploading to archive folder", path)
+		}
+
 		return s.UploadFile(ctx, path, objectName)
 	})
 }
 
-// CleanupOldBackups removes backups older than the retention period
+// CleanupOldBackups is now deprecated as we're using R2 lifecycle policies instead
+// This function is kept for backward compatibility but doesn't delete objects anymore
 func (s *S3Client) CleanupOldBackups(ctx context.Context) error {
-	cutoffTime := time.Now().AddDate(0, 0, -s.config.RetentionDays)
-
-	// List all objects in the bucket
-	objectCh := s.client.ListObjects(ctx, s.config.BucketName, minio.ListObjectsOptions{
-		Recursive: true,
-	})
-
-	for object := range objectCh {
-		if object.Err != nil {
-			log.Printf("Error listing object: %v", object.Err)
-			continue
-		}
-
-		// Check if object is older than retention period
-		if object.LastModified.Before(cutoffTime) {
-			err := s.client.RemoveObject(ctx, s.config.BucketName, object.Key, minio.RemoveObjectOptions{})
-			if err != nil {
-				log.Printf("Failed to remove old backup %s: %v", object.Key, err)
-				continue
-			}
-			log.Printf("Removed old backup: %s (last modified: %s)",
-				object.Key, object.LastModified.Format(time.RFC3339))
-		}
-	}
-
+	log.Printf("CleanupOldBackups is deprecated - using R2 lifecycle policies instead")
+	log.Printf("Objects in the 'archive/' prefix should have a lifecycle policy configured in R2")
 	return nil
 }

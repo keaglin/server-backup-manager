@@ -76,17 +76,17 @@ func (m *Manager) RunBackup() error {
 	startTime := time.Now()
 	log.Println("Starting backup operation...")
 
-	// Upload backups
+	// Upload backups (files older than 14 days will be uploaded to the archive/ prefix)
 	if err := m.s3Client.UploadDirectory(ctx, m.config.BackupDir); err != nil {
 		return fmt.Errorf("backup upload failed: %w", err)
 	}
 	log.Println("Backup upload completed successfully")
 
-	// Clean up old backups
+	// Call CleanupOldBackups for backward compatibility
+	// This function no longer deletes objects but logs a message about R2 lifecycle policies
 	if err := m.s3Client.CleanupOldBackups(ctx); err != nil {
 		return fmt.Errorf("old backup cleanup failed: %w", err)
 	}
-	log.Println("Old backup cleanup completed successfully")
 
 	duration := time.Since(startTime)
 	log.Printf("Backup operation completed in %s", duration)
@@ -95,21 +95,20 @@ func (m *Manager) RunBackup() error {
 
 // InitializeBackups scans existing backups and applies retention policies
 // It will:
-// 1. Delete local backups older than RetentionDays
-// 2. Upload all remaining backups to S3
+// 1. Upload all backups to S3, with files older than 14 days going to the archive/ prefix
 func (m *Manager) InitializeBackups() error {
 	ctx := context.Background()
 	startTime := time.Now()
 	log.Println("Starting initialization of existing backups...")
 
-	// Calculate cutoff time for retention
-	cutoffTime := time.Now().AddDate(0, 0, -m.config.RetentionDays)
-	log.Printf("Retention policy: keeping backups newer than %s", cutoffTime.Format("2006-01-02"))
+	// Calculate cutoff time for old logs (14 days)
+	oldLogsCutoff := time.Now().AddDate(0, 0, -14)
+	log.Printf("Files older than %s will be uploaded to the archive/ prefix", oldLogsCutoff.Format("2006-01-02"))
 
 	// Track statistics
 	var (
 		totalFiles    int
-		deletedFiles  int
+		archivedFiles int
 		uploadedFiles int
 		errorCount    int
 	)
@@ -134,18 +133,6 @@ func (m *Manager) InitializeBackups() error {
 
 		totalFiles++
 
-		// Check if file is older than retention period
-		if info.ModTime().Before(cutoffTime) {
-			log.Printf("Deleting old backup: %s (modified: %s)", path, info.ModTime().Format("2006-01-02 15:04:05"))
-			if err := os.Remove(path); err != nil {
-				log.Printf("Error deleting file %s: %v", path, err)
-				errorCount++
-			} else {
-				deletedFiles++
-			}
-			return nil
-		}
-
 		// Get relative path for object name
 		relPath, err := filepath.Rel(m.config.BackupDir, path)
 		if err != nil {
@@ -156,6 +143,13 @@ func (m *Manager) InitializeBackups() error {
 
 		// Replace backslashes with forward slashes for S3 object paths
 		objectName := strings.ReplaceAll(relPath, "\\", "/")
+
+		// If the file is older than 14 days, put it in an "archive" folder
+		if info.ModTime().Before(oldLogsCutoff) {
+			objectName = "archive/" + objectName
+			archivedFiles++
+			log.Printf("File %s is older than 14 days, uploading to archive folder", path)
+		}
 
 		// Upload file to S3
 		if err := m.s3Client.UploadFile(ctx, path, objectName); err != nil {
@@ -172,16 +166,16 @@ func (m *Manager) InitializeBackups() error {
 		return fmt.Errorf("error walking backup directory: %w", err)
 	}
 
-	// Clean up old backups in S3
+	// Call CleanupOldBackups for backward compatibility
 	if err := m.s3Client.CleanupOldBackups(ctx); err != nil {
-		log.Printf("Warning: error cleaning up old backups in S3: %v", err)
+		log.Printf("Warning: error in CleanupOldBackups: %v", err)
 		errorCount++
 	}
 
 	duration := time.Since(startTime)
 	log.Printf("Initialization completed in %s", duration)
-	log.Printf("Summary: %d total files, %d deleted, %d uploaded, %d errors",
-		totalFiles, deletedFiles, uploadedFiles, errorCount)
+	log.Printf("Summary: %d total files, %d archived, %d uploaded, %d errors",
+		totalFiles, archivedFiles, uploadedFiles, errorCount)
 
 	return nil
 }

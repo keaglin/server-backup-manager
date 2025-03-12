@@ -29,7 +29,7 @@ This guide will help you deploy the server-backup-manager to your server.
 
 4. Run the setup script:
    ```bash
-   sudo ./setup-r2.sh
+   sudo ./setup.sh
    ```
    
    This script will:

@@ -18,7 +18,9 @@ type Config struct {
 	AccessKeyID     string
 	SecretAccessKey string
 	UseSSL          bool
-	// Retention settings
+	// Retention settings - Note: This is now only used for backward compatibility
+	// Files older than 14 days are automatically uploaded to the archive/ prefix
+	// and R2 lifecycle policies should be used for deletion
 	RetentionDays int
 	// Upload frequency (cron expression)
 	UploadSchedule string
@@ -40,21 +42,21 @@ func LoadConfig() *Config {
 	config := &Config{}
 
 	// Define command-line flags
-	flag.StringVar(&config.BackupDir, "backup-dir", getEnv("BACKUP_DIR", "/path/to/backups"), "Directory containing backup files")
-	flag.StringVar(&config.BucketName, "bucket-name", getEnv("BUCKET_NAME", "backups"), "S3 bucket name")
-	flag.StringVar(&config.BucketEndpoint, "bucket-endpoint", getEnv("BUCKET_ENDPOINT", "s3.hetzner.cloud"), "S3 endpoint URL")
-	flag.StringVar(&config.AccessKeyID, "access-key", getEnv("ACCESS_KEY_ID", ""), "S3 access key ID")
-	flag.StringVar(&config.SecretAccessKey, "secret-key", getEnv("SECRET_ACCESS_KEY", ""), "S3 secret access key")
-	flag.BoolVar(&config.UseSSL, "use-ssl", getEnvBool("USE_SSL", true), "Use SSL for S3 connections")
-	flag.IntVar(&config.RetentionDays, "retention-days", getEnvInt("RETENTION_DAYS", 90), "Number of days to retain backups")
-	flag.StringVar(&config.UploadSchedule, "schedule", getEnv("UPLOAD_SCHEDULE", "0 0 */14 * *"), "Cron schedule for backups")
+	flag.StringVar(&config.BackupDir, "backup-dir", getEnv("BACKUP_DIR", "/var/backups"), "Directory containing backup files")
+	flag.StringVar(&config.BucketName, "bucket-name", getEnv("BUCKET_NAME", "server-backups"), "S3 bucket name")
+	flag.StringVar(&config.BucketEndpoint, "bucket-endpoint", getEnv("BUCKET_ENDPOINT", ""), "R2 endpoint URL (e.g., accountid.r2.cloudflarestorage.com)")
+	flag.StringVar(&config.AccessKeyID, "access-key", getEnv("ACCESS_KEY_ID", ""), "R2 access key ID")
+	flag.StringVar(&config.SecretAccessKey, "secret-key", getEnv("SECRET_ACCESS_KEY", ""), "R2 secret access key")
+	flag.BoolVar(&config.UseSSL, "use-ssl", getEnvBool("USE_SSL", true), "Use SSL for R2 connections")
+	flag.IntVar(&config.RetentionDays, "retention-days", getEnvInt("RETENTION_DAYS", 14), "Number of days before files are moved to archive/ prefix")
+	flag.StringVar(&config.UploadSchedule, "schedule", getEnv("UPLOAD_SCHEDULE", "0 2 * * *"), "Cron schedule for backups")
 	flag.BoolVar(&config.RunOnce, "run-once", getEnvBool("RUN_ONCE", false), "Run backup once and exit")
-	flag.BoolVar(&config.InitializeMode, "initialize", getEnvBool("INITIALIZE", false), "Initialize mode: scan existing backups and apply retention policies")
+	flag.BoolVar(&config.InitializeMode, "initialize", getEnvBool("INITIALIZE", false), "Initialize mode: scan existing backups and upload to R2")
 
 	// Monitoring flags
-	flag.BoolVar(&config.EnableMonitoring, "enable-monitoring", getEnvBool("ENABLE_MONITORING", true), "Enable disk space monitoring")
+	flag.BoolVar(&config.EnableMonitoring, "enable-monitoring", getEnvBool("ENABLE_MONITORING", false), "Enable disk space monitoring")
 	monitorPathsStr := flag.String("monitor-paths", getEnv("MONITOR_PATHS", ""), "Comma-separated list of paths to monitor for disk space")
-	flag.Float64Var(&config.DiskThresholdPercent, "disk-threshold", getEnvFloat("DISK_THRESHOLD", 75.0), "Disk usage threshold percentage for alerts")
+	flag.Float64Var(&config.DiskThresholdPercent, "disk-threshold", getEnvFloat("DISK_THRESHOLD", 85.0), "Disk usage threshold percentage for alerts")
 	monitorIntervalStr := flag.String("monitor-interval", getEnv("MONITOR_INTERVAL", "30m"), "Interval for disk space checks")
 	webhookURLsStr := flag.String("webhook-urls", getEnv("WEBHOOK_URLS", ""), "Comma-separated list of webhook URLs for alerts")
 	webhookTimeoutStr := flag.String("webhook-timeout", getEnv("WEBHOOK_TIMEOUT", "10s"), "Timeout for webhook requests")
@@ -113,7 +115,7 @@ func (c *Config) Validate() error {
 	}
 
 	if c.AccessKeyID == "" || c.SecretAccessKey == "" {
-		return fmt.Errorf("S3 credentials are required")
+		return fmt.Errorf("R2 credentials are required")
 	}
 
 	// Validate monitoring configuration if enabled

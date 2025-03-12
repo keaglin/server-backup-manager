@@ -17,25 +17,74 @@ TEMP_CONFIG_FILE="/tmp/server-backup-manager.env"
 mkdir -p "$INSTALL_DIR"
 mkdir -p "$CONFIG_DIR"
 
-# Prompt for configuration values
-read -p "Enter backup directory path: " BACKUP_DIR
-read -p "Enter R2 bucket name: " BUCKET_NAME
-read -p "Enter R2 endpoint (e.g., xxx.r2.cloudflarestorage.com): " ENDPOINT
+# Default values
+DEFAULT_BACKUP_DIR="/var/backups"
+DEFAULT_BUCKET_NAME="server-backups"
+DEFAULT_RETENTION_DAYS="14"
+DEFAULT_UPLOAD_SCHEDULE="0 2 * * *"
+DEFAULT_DISK_THRESHOLD="85"
+
+# Prompt for configuration values with defaults
+read -p "Enter backup directory path [${DEFAULT_BACKUP_DIR}]: " BACKUP_DIR
+BACKUP_DIR=${BACKUP_DIR:-$DEFAULT_BACKUP_DIR}
+
+read -p "Enter R2 bucket name [${DEFAULT_BUCKET_NAME}]: " BUCKET_NAME
+BUCKET_NAME=${BUCKET_NAME:-$DEFAULT_BUCKET_NAME}
+
+# Ensure R2 endpoint is properly set and formatted
+while true; do
+    read -p "Enter R2 endpoint (e.g., accountid.r2.cloudflarestorage.com): " ENDPOINT
+    
+    if [[ -z "$ENDPOINT" ]]; then
+        echo "ERROR: R2 endpoint is required. Please enter a valid endpoint."
+        continue
+    fi
+    
+    # Remove any protocol prefix if entered
+    ENDPOINT=$(echo "$ENDPOINT" | sed -E 's|^(https?://)||')
+    
+    # Validate format - should contain r2.cloudflarestorage.com
+    if [[ ! "$ENDPOINT" =~ r2\.cloudflarestorage\.com ]]; then
+        echo "WARNING: Endpoint doesn't match expected format (accountid.r2.cloudflarestorage.com)"
+        read -p "Are you sure this is correct? (y/n): " CONFIRM
+        if [[ "$CONFIRM" =~ ^[Yy]$ ]]; then
+            break
+        fi
+        continue
+    fi
+    
+    break
+done
+
+echo "Using R2 endpoint: $ENDPOINT"
+
 read -p "Enter R2 access key ID: " ACCESS_KEY
+while [[ -z "$ACCESS_KEY" ]]; do
+    echo "ERROR: R2 access key ID is required."
+    read -p "Enter R2 access key ID: " ACCESS_KEY
+done
+
 read -s -p "Enter R2 secret access key: " SECRET_KEY
 echo ""
-read -p "Enter backup retention days (default: 14): " RETENTION_DAYS
-RETENTION_DAYS=${RETENTION_DAYS:-14}
-read -p "Enter backup schedule in cron format (default: 0 2 * * *): " UPLOAD_SCHEDULE
-UPLOAD_SCHEDULE=${UPLOAD_SCHEDULE:-"0 2 * * *"}
+while [[ -z "$SECRET_KEY" ]]; do
+    echo "ERROR: R2 secret access key is required."
+    read -s -p "Enter R2 secret access key: " SECRET_KEY
+    echo ""
+done
+
+read -p "Enter backup retention days [${DEFAULT_RETENTION_DAYS}]: " RETENTION_DAYS
+RETENTION_DAYS=${RETENTION_DAYS:-$DEFAULT_RETENTION_DAYS}
+
+read -p "Enter backup schedule in cron format [${DEFAULT_UPLOAD_SCHEDULE}]: " UPLOAD_SCHEDULE
+UPLOAD_SCHEDULE=${UPLOAD_SCHEDULE:-$DEFAULT_UPLOAD_SCHEDULE}
 
 # Monitoring configuration
-read -p "Enable disk space monitoring? (yes/no, default: no): " ENABLE_MONITORING_INPUT
+read -p "Enable disk space monitoring? (yes/no) [no]: " ENABLE_MONITORING_INPUT
 ENABLE_MONITORING_INPUT=${ENABLE_MONITORING_INPUT:-"no"}
 if [[ "$ENABLE_MONITORING_INPUT" =~ ^[Yy][Ee][Ss]$ ]]; then
     ENABLE_MONITORING="true"
-    read -p "Enter disk usage threshold percentage (default: 85): " DISK_THRESHOLD
-    DISK_THRESHOLD=${DISK_THRESHOLD:-85}
+    read -p "Enter disk usage threshold percentage [${DEFAULT_DISK_THRESHOLD}]: " DISK_THRESHOLD
+    DISK_THRESHOLD=${DISK_THRESHOLD:-$DEFAULT_DISK_THRESHOLD}
     
     # Webhook configuration
     WEBHOOK_URLS=""
@@ -62,6 +111,10 @@ fi
 
 # Create environment file
 cat > "$TEMP_CONFIG_FILE" << EOF
+# Server Backup Manager Configuration
+# Generated on $(date)
+
+# Backup Settings
 BACKUP_DIR=$BACKUP_DIR
 BUCKET_NAME=$BUCKET_NAME
 BUCKET_ENDPOINT=$ENDPOINT
@@ -70,6 +123,8 @@ SECRET_ACCESS_KEY=$SECRET_KEY
 USE_SSL=true
 RETENTION_DAYS=$RETENTION_DAYS
 UPLOAD_SCHEDULE="$UPLOAD_SCHEDULE"
+
+# Monitoring Settings
 ENABLE_MONITORING=$ENABLE_MONITORING
 EOF
 
@@ -113,4 +168,7 @@ fi
 
 echo "Configuration complete. Service will start on next boot."
 echo "To start the service now, run: systemctl start server-backup-manager"
-echo "To check service status, run: systemctl status server-backup-manager" 
+echo "To check service status, run: systemctl status server-backup-manager"
+echo ""
+echo "IMPORTANT: Make sure to set up a lifecycle policy in your R2 bucket for the 'archive/' prefix"
+echo "to automatically delete old backups according to your retention requirements." 

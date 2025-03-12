@@ -26,8 +26,8 @@ GOOS=$OS GOARCH=$ARCH go build -o "$PACKAGE_DIR/$BINARY_NAME" .
 
 # Copy deployment files
 echo "Copying deployment files..."
-cp "$DEPLOY_DIR/setup.sh" "$PACKAGE_DIR/setup-r2.sh"
-chmod +x "$PACKAGE_DIR/setup-r2.sh"
+cp "$DEPLOY_DIR/setup.sh" "$PACKAGE_DIR/setup.sh"
+chmod +x "$PACKAGE_DIR/setup.sh"
 cp "$DEPLOY_DIR/server-backup-manager.service" "$PACKAGE_DIR/"
 cp "$DEPLOY_DIR/deploy.sh" "$PACKAGE_DIR/"
 chmod +x "$PACKAGE_DIR/deploy.sh"
