@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime/debug"
 	"syscall"
 
 	"github.com/user/server-backup-manager/internal/backup"
@@ -14,7 +15,25 @@ import (
 	"github.com/user/server-backup-manager/pkg/utils"
 )
 
+// setMemoryLimits configures the Go runtime to use less memory
+func setMemoryLimits() {
+	// Set memory limit to 1GB (adjust as needed)
+	debug.SetMemoryLimit(1024 * 1024 * 1024)
+
+	// Set more aggressive garbage collection
+	// Lower percentage means more frequent GC
+	debug.SetGCPercent(20)
+
+	// Free memory to the OS more aggressively
+	debug.FreeOSMemory()
+
+	log.Println("Memory limits configured: 1GB max, GC percentage: 20%")
+}
+
 func main() {
+	// Set memory limits to avoid OOM killer
+	setMemoryLimits()
+
 	// Load configuration
 	cfg := config.LoadConfig()
 	if err := cfg.Validate(); err != nil {
