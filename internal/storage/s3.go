@@ -149,15 +149,60 @@ func (s *S3Client) EnsureBucketExists(ctx context.Context) error {
 	return nil
 }
 
-// UploadFile uploads a single file to the bucket
+// CheckIfFileExists checks if a file already exists in the bucket with the same size
+func (s *S3Client) CheckIfFileExists(ctx context.Context, objectName string, localSize int64) (bool, error) {
+	// Try to get object metadata
+	resp, err := s.client.HeadObject(ctx, &s3.HeadObjectInput{
+		Bucket: aws.String(s.config.BucketName),
+		Key:    aws.String(objectName),
+	})
+
+	if err != nil {
+		if strings.Contains(err.Error(), "NotFound") || strings.Contains(err.Error(), "404") || strings.Contains(err.Error(), "not found") {
+			// Object doesn't exist
+			return false, nil
+		}
+		// Some other error
+		return false, fmt.Errorf("error checking if file exists: %w", err)
+	}
+
+	// Object exists, check if sizes match
+	if resp.ContentLength != nil {
+		return *resp.ContentLength == localSize, nil
+	}
+
+	// If ContentLength is nil, assume sizes don't match
+	return false, nil
+}
+
+// UploadFile uploads a single file to the bucket using memory-efficient streaming
 func (s *S3Client) UploadFile(ctx context.Context, localPath, objectName string) error {
+	// Get file info for size
+	fileInfo, err := os.Stat(localPath)
+	if err != nil {
+		return fmt.Errorf("failed to get file info for %s: %w", localPath, err)
+	}
+
+	// Check if file already exists with same size
+	exists, err := s.CheckIfFileExists(ctx, objectName, fileInfo.Size())
+	if err != nil {
+		log.Printf("Warning: Failed to check if file exists: %v", err)
+	} else if exists {
+		log.Printf("File %s already exists in bucket with same size, skipping upload", objectName)
+		return nil
+	}
+
+	// Open the file for reading
 	file, err := os.Open(localPath)
 	if err != nil {
 		return fmt.Errorf("failed to open file %s: %w", localPath, err)
 	}
 	defer file.Close()
 
-	// Upload the file
+	// Upload the file with memory-efficient streaming
+	log.Printf("Uploading %s to bucket as %s (size: %d bytes)", localPath, objectName, fileInfo.Size())
+
+	// Use PutObject directly with the file as a ReadSeeker
 	_, err = s.client.PutObject(ctx, &s3.PutObjectInput{
 		Bucket: aws.String(s.config.BucketName),
 		Key:    aws.String(objectName),
@@ -172,7 +217,7 @@ func (s *S3Client) UploadFile(ctx context.Context, localPath, objectName string)
 		return fmt.Errorf("failed to upload file %s: %w", localPath, err)
 	}
 
-	log.Printf("Uploaded %s to bucket as %s", localPath, objectName)
+	log.Printf("Successfully uploaded %s to bucket as %s", localPath, objectName)
 	return nil
 }
 
