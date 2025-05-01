@@ -9,12 +9,16 @@ Group=root
 WorkingDirectory=/opt/server-backup-manager
 ExecStart=/opt/server-backup-manager/server-backup-manager
 Restart=on-failure
-RestartSec=10
+RestartSec=30
+Environment="GOGC=20"
+EnvironmentFile=/etc/default/server-backup-manager
+# Memory limits
+MemoryLimit=1G
+MemorySwapMax=0
+# Make the OOM killer less likely to kill this process
+OOMScoreAdjust=-100
 StandardOutput=journal
 StandardError=journal
-
-# Optional: Set environment variables if needed
-# Environment=KEY=value
 
 [Install]
 WantedBy=multi-user.target 
