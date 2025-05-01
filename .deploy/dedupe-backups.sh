@@ -56,7 +56,7 @@ if [ -d "${BACKUP_DIR}" ]; then
 fi
 
 # Check available disk space
-REQUIRED_SPACE=$(du -sb /var/lib/docker/volumes/{app_db_data,app_ghost_data,app_minio_data,ghost_app_db_data,ghost_db_data} 2>/dev/null | awk '{total += $1} END {print total}')
+REQUIRED_SPACE=$(du -sb /var/lib/docker/volumes/{app_db_data,ghost_data,minio_data} 2>/dev/null | awk '{total += $1} END {print total}')
 AVAILABLE_SPACE=$(df -B1 /home/ghost/backups | awk 'NR==2 {print $4}')
 
 if [ $AVAILABLE_SPACE -lt $REQUIRED_SPACE ]; then
