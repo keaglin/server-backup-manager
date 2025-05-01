@@ -1,91 +1,167 @@
 # Server Backup Manager
 
-A Go application for managing server backups to Cloudflare R2 or compatible S3 storage.
+A memory-efficient tool for backing up server data to Cloudflare R2 storage with resumable uploads.
 
 ## Features
 
-- Automated backups to Cloudflare R2 (or any S3-compatible storage)
-- Configurable backup schedule using cron syntax
-- Automatic cleanup of old backups based on retention policy
-- Disk space monitoring with webhook notifications
-- Systemd integration for reliable operation
-- Initialization mode for existing backups
-- One-time backup mode
+- **Memory-efficient uploads**: Designed to use minimal memory to avoid OOM killer
+- **Resumable uploads**: Can resume interrupted uploads without re-uploading already transferred files
+- **Automatic archiving**: Files older than 14 days are automatically moved to an `archive/` prefix
+- **Scheduled backups**: Configure backup schedules using cron expressions
+- **Disk space monitoring**: Optional monitoring of disk space with webhook alerts
+
+## Installation
+
+For detailed deployment instructions, especially for running as a systemd service, see the [Deployment Guide](.deploy/DEPLOY.md).
+
+### Prerequisites
+
+- Go 1.18 or higher
+- Access to Cloudflare R2 storage
+
+### Building from source
+
+```bash
+git clone https://github.com/keaglin/server-backup-manager.git
+cd server-backup-manager
+go build -o server-backup-manager
+```
+
+### Installing as a service
+
+1. Copy the binary to a system location:
+   ```bash
+   sudo cp server-backup-manager /usr/local/bin/
+   ```
+
+2. Copy the systemd service file:
+   ```bash
+   sudo cp server-backup-manager.service /etc/systemd/system/
+   ```
+
+3. Reload systemd and enable the service:
+   ```bash
+   sudo systemctl daemon-reload
+   sudo systemctl enable server-backup-manager
+   ```
 
 ## Configuration
 
-The server-backup-manager uses environment variables for configuration. These can be set in the file `/etc/default/server-backup-manager` which is read by the systemd service.
+The application is primarily configured using environment variables. Command-line flags are also available, which might be more convenient for one-time runs.
 
-Key environment variables:
+When deploying as a service using the method described in the [Deployment Guide](.deploy/DEPLOY.md), configuration should be placed in `/etc/default/server-backup-manager`.
 
-- `BACKUP_DIR`: Directory to back up
-- `BUCKET_NAME`: R2 bucket name
-- `BUCKET_ENDPOINT`: R2 endpoint URL
-- `ACCESS_KEY_ID`: R2 access key ID
-- `SECRET_ACCESS_KEY`: R2 secret access key
-- `ENABLE_MONITORING`: Enable disk space monitoring (true/false)
-- `WEBHOOK_URLS`: Comma-separated list of webhook URLs (required if monitoring is enabled)
-- `INITIALIZE`: Initialize mode for existing backups (true/false)
-- `RUN_ONCE`: Run backup once and exit (true/false)
+### Required Configuration
 
-For a complete list of configuration options, see the [Deployment Guide](DEPLOY.md).
+| Environment Variable | Command-line Flag | Description |
+|---|---|---|
+| `BACKUP_DIR` | `--backup-dir` | Directory containing backup files |
+| `BUCKET_NAME` | `--bucket-name` | R2 bucket name |
+| `BUCKET_ENDPOINT` | `--bucket-endpoint` | R2 endpoint URL (e.g., `accountid.r2.cloudflarestorage.com`) |
+| `ACCESS_KEY_ID` | `--access-key` | R2 access key ID |
+| `SECRET_ACCESS_KEY` | `--secret-key` | R2 secret access key |
+| `USE_SSL` | `--use-ssl` | Use SSL for R2 connection (default: `true`) |
 
-## Special Operation Modes
 
-### Initialization Mode
+### Optional Configuration
 
-The initialization mode is designed for when you're setting up the backup manager for the first time and already have existing backup files. When run with the `INITIALIZE=true` environment variable or `--initialize` flag, the application will:
+| Environment Variable | Command-line Flag | Description | Default |
+|---|---|---|---|
+| `UPLOAD_SCHEDULE` | `--schedule` | Cron schedule for backups | `"0 2 * * *"` |
+| `RETENTION_DAYS` | `--retention-days` | Days before files are moved to `archive/` prefix | `14` |
+| `RUN_ONCE` | `--run-once` | Run backup once and exit | `false` |
+| `INITIALIZE` | `--initialize` | Initialize mode for resumable uploads | `false` |
+| `ENABLE_MONITORING` | `--enable-monitoring` | Enable disk space monitoring | `false` |
+| `DISK_THRESHOLD` | `--disk-threshold` | Disk usage percentage threshold for monitoring alerts | `85` |
+| `WEBHOOK_URLS` | `--webhook-urls` | Comma-separated list of webhook URLs for monitoring alerts | `""` |
 
-1. Scan the specified backup directory for existing files
-2. Delete local files older than the retention period
-3. Upload all remaining files to the R2 bucket
-4. Apply the same retention policy to the R2 bucket
 
-Example:
-```bash
-# Using command-line flag
-/opt/server-backup-manager/server-backup-manager --initialize --backup-dir=/path/to/existing/backups
+## Usage
 
-# Using environment variable
-INITIALIZE=true BACKUP_DIR=/path/to/existing/backups /opt/server-backup-manager/server-backup-manager
-```
-
-### One-Time Backup Mode
-
-If you want to run a single backup and then exit (instead of running as a service), you can use the one-time backup mode:
+### Running a one-time backup
 
 ```bash
-# Using command-line flag
-/opt/server-backup-manager/server-backup-manager --run-once
-
-# Using environment variable
-RUN_ONCE=true /opt/server-backup-manager/server-backup-manager
+server-backup-manager --run-once \
+  --backup-dir=/path/to/backups \
+  --bucket-name=your-bucket \
+  --bucket-endpoint=accountid.r2.cloudflarestorage.com \
+  --access-key=your-access-key \
+  --secret-key=your-secret-key
 ```
 
-## Deployment
+### Initializing with resumable uploads
 
-See the [Deployment Guide](DEPLOY.md) for detailed instructions on how to deploy the server-backup-manager to your server.
+If your upload was interrupted or you want to upload all existing backups:
+
+```bash
+server-backup-manager --initialize \
+  --backup-dir=/path/to/backups \
+  --bucket-name=your-bucket \
+  --bucket-endpoint=accountid.r2.cloudflarestorage.com \
+  --access-key=your-access-key \
+  --secret-key=your-secret-key
+```
+
+This will:
+1. Scan all existing backup directories
+2. Upload files that haven't been uploaded yet
+3. Track progress so you can resume if interrupted
+
+### Running as a service
+
+Start the service:
+
+```bash
+sudo systemctl start server-backup-manager
+```
+
+Check status:
+
+```bash
+sudo systemctl status server-backup-manager
+```
+
+View logs:
+
+```bash
+sudo journalctl -u server-backup-manager -f
+```
+
+## Memory Management
+
+The application is designed to be memory-efficient:
+
+1. **Built-in memory limits**: The application sets a 1GB memory limit and aggressive garbage collection
+2. **Systemd memory limits**: The systemd service file includes a 1GB memory limit
+3. **Efficient file handling**: Files are processed in a streaming manner to minimize memory usage
+4. **Resumable uploads**: Interrupted uploads can be resumed without re-uploading already transferred files
 
 ## Troubleshooting
 
-If you encounter issues with the server-backup-manager, refer to the [Troubleshooting Guide](TROUBLESHOOTING.md) for common problems and solutions.
+If you encounter issues, check the application logs and consult the [Troubleshooting Guide](.deploy/TROUBLESHOOTING.md) for common problems and solutions.
 
-## Development
+### OOM Killer Issues
 
-### Building from Source
+If the application is still being killed by the OOM killer:
 
-```bash
-go build -o server-backup-manager .
-```
+1. Adjust the memory limit in the systemd service file:
+   ```
+   MemoryLimit=1.5G
+   ```
 
-### Creating a Deployment Package
+2. Reduce concurrency by setting environment variables:
+   ```
+   GOMAXPROCS=2
+   ```
 
-```bash
-./package.sh
-```
+### Resuming Interrupted Uploads
 
-This will create a tarball containing the executable and all necessary files for deployment.
+If an upload is interrupted, simply run the application again with the `--initialize` flag. It will:
 
-## License
+1. Check which files have already been uploaded
+2. Skip those files and continue with the remaining ones
+3. Track progress as it goes
+
+# License
 
 [MIT License](LICENSE) 

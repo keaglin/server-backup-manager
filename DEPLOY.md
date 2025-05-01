@@ -149,7 +149,7 @@ If you encounter issues:
    cat /etc/default/server-backup-manager
    ```
 
-4. For more detailed troubleshooting, refer to the TROUBLESHOOTING.md file.
+4. For more detailed troubleshooting, refer to the [TROUBLESHOOTING.md](TROUBLESHOOTING.md) file.
 
 ## Updating
 
