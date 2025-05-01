@@ -23,6 +23,9 @@ DEFAULT_BUCKET_NAME="server-backups"
 DEFAULT_RETENTION_DAYS="14"
 DEFAULT_UPLOAD_SCHEDULE="0 2 * * *"
 DEFAULT_DISK_THRESHOLD="85"
+DEFAULT_ENDPOINT="accountid.r2.cloudflarestorage.com"
+DEFAULT_ACCESS_KEY="secret"
+DEFAULT_SECRET_KEY="secret"
 
 # Prompt for configuration values with defaults
 read -p "Enter backup directory path [${DEFAULT_BACKUP_DIR}]: " BACKUP_DIR
@@ -31,9 +34,15 @@ BACKUP_DIR=${BACKUP_DIR:-$DEFAULT_BACKUP_DIR}
 read -p "Enter R2 bucket name [${DEFAULT_BUCKET_NAME}]: " BUCKET_NAME
 BUCKET_NAME=${BUCKET_NAME:-$DEFAULT_BUCKET_NAME}
 
+ENDPOINT=${DEFAULT_ENDPOINT}
+
 # Ensure R2 endpoint is properly set and formatted
 while true; do
     read -p "Enter R2 endpoint (e.g., accountid.r2.cloudflarestorage.com): " ENDPOINT
+    
+    if [[ -z "$ENDPOINT" ]]; then
+        ENDPOINT=${DEFAULT_ENDPOINT}
+    fi
     
     if [[ -z "$ENDPOINT" ]]; then
         echo "ERROR: R2 endpoint is required. Please enter a valid endpoint."
@@ -58,14 +67,19 @@ done
 
 echo "Using R2 endpoint: $ENDPOINT"
 
+
+
+
+
 read -p "Enter R2 access key ID: " ACCESS_KEY
+ACCESS_KEY=${ACCESS_KEY:-$DEFAULT_ACCESS_KEY}
 while [[ -z "$ACCESS_KEY" ]]; do
     echo "ERROR: R2 access key ID is required."
     read -p "Enter R2 access key ID: " ACCESS_KEY
 done
 
 read -s -p "Enter R2 secret access key: " SECRET_KEY
-echo ""
+SECRET_KEY=${SECRET_KEY:-$DEFAULT_SECRET_KEY}
 while [[ -z "$SECRET_KEY" ]]; do
     echo "ERROR: R2 secret access key is required."
     read -s -p "Enter R2 secret access key: " SECRET_KEY
@@ -142,18 +156,24 @@ rm "$TEMP_CONFIG_FILE"
 if [[ ! -f "$SERVICE_FILE" ]]; then
     cat > "$SERVICE_FILE" << EOF
 [Unit]
-Description=Server Backup Manager
+Description=Server Backup Manager Service
 After=network.target
 
 [Service]
 Type=simple
 User=root
 Group=root
-WorkingDirectory=$INSTALL_DIR
-ExecStart=$INSTALL_DIR/server-backup-manager
-EnvironmentFile=$CONFIG_DIR/$CONFIG_FILE
+WorkingDirectory=/opt/server-backup-manager
+ExecStart=/opt/server-backup-manager/server-backup-manager
 Restart=on-failure
-RestartSec=10
+RestartSec=30
+Environment="GOGC=20"
+EnvironmentFile=/etc/default/server-backup-manager
+# Memory limits
+MemoryLimit=1G
+MemorySwapMax=0
+# Make the OOM killer less likely to kill this process
+OOMScoreAdjust=-100
 StandardOutput=journal
 StandardError=journal
 
